@@ -1,824 +1,1199 @@
 #include <iostream>
-#include <iomanip>
+#include <fstream>
+#include <cstring>
 #include <cstdlib>
 #include <conio.h>
 using namespace std;
 
-//  GLOBAL STATE
+// ---- limits ----
+const int MAX_TEAMS   = 20;
+const int MAX_MATCHES = 380;
+const int MAX_LOGS    = 100;
+const int MAX_ADMINS  = 5;
 
-// Team data
-string team_names[20];
-int    points[20]         = {0};
-int    matches_played[20] = {0};
-int    wins[20]           = {0};
-int    losses[20]         = {0};
-int    draws[20]          = {0};
-int    goals_for[20]      = {0};
-int    goals_against[20]  = {0};
-int    total_teams        = 5;
+// ---- team data ----
+char team_name[MAX_TEAMS][50];
+int  team_points[MAX_TEAMS];
+int  team_played[MAX_TEAMS];
+int  team_wins[MAX_TEAMS];
+int  team_losses[MAX_TEAMS];
+int  team_draws[MAX_TEAMS];
+int  team_gf[MAX_TEAMS];     // goals for
+int  team_ga[MAX_TEAMS];     // goals against
+int  total_teams = 0;
 
-// Match data
-int    match_team1[200]   = {0};
-int    match_team2[200]   = {0};
-int    match_day[200]     = {0};
-bool   match_played[200]  = {false};
-int    goals1[200]        = {0};
-int    goals2[200]        = {0};
-int    total_matches      = 0;
-int    current_matchday   = 0;
+// ---- match schedule ----
+int  match_home[MAX_MATCHES];
+int  match_away[MAX_MATCHES];
+int  match_day[MAX_MATCHES];
+int  match_goals_home[MAX_MATCHES];
+int  match_goals_away[MAX_MATCHES];
+bool match_done[MAX_MATCHES];
+int  total_matches   = 0;
+int  current_day     = 0;
 
-// Round-robin rotation
-int    order[20]          = {0};
-bool   order_initialized  = false;
+// for round robin rotation
+int  rr_order[MAX_TEAMS];
+bool rr_ready = false;
 
-// Match history (last 10 results)
-string history[10];
-int    history_count      = 0;
+// ---- admin accounts ----
+char admin_user[MAX_ADMINS][30];
+char admin_pass[MAX_ADMINS][30];
+char admin_secret[MAX_ADMINS][40];  // secret answer for forgot pass
+int  total_admins = 0;
 
-//  UTILITY
+// who is logged in (-1 = nobody)
+int logged_in_admin = -1;
 
-// Convert a string to lowercase in-place
-void to_lower(string &s)
+// ---- history log ----
+char log_lines[MAX_LOGS][120];
+int  total_logs = 0;
+
+// file names
+const char* TEAMS_FILE   = "teams.dat";
+const char* MATCHES_FILE = "matches.dat";
+const char* ADMINS_FILE  = "admins.dat";
+const char* LOGS_FILE    = "logs.dat";
+const char* KEY_FILE     = "secret_key.txt";
+
+//HELPER FUNCTIONS
+
+void cls()
 {
-    for (int c = 0; c < (int)s.size(); c++)
-        if (s[c] >= 'A' && s[c] <= 'Z')
-            s[c] += 32;
+    system("cls");
 }
 
-// Pause until the user presses a key
-void pause()
+void pause_key()
 {
-    cout << "\nPress any key to continue...\n";
+    cout << "\nPress any key...";
     getch();
 }
 
-// Push a result string into the history
-void push_history(const string &record)
+// make string lowercase
+void make_lower(char* s)
 {
-    if (history_count < 10)
-    {
-        history[history_count++] = record;
-    }
-    else
-    {
-        for (int h = 0; h < 9; h++)
-            history[h] = history[h + 1];
-        history[9] = record;
-    }
+    for (int i = 0; s[i] != '\0'; i++)
+        if (s[i] >= 'A' && s[i] <= 'Z')
+            s[i] += 32;
 }
-//  ADMIN FUNCTIONS
+
+// compare two strings ignoring case
+bool same_str(const char* a, const char* b)
+{
+    char x[100], y[100];
+    strncpy(x, a, 99); x[99] = '\0';
+    strncpy(y, b, 99); y[99] = '\0';
+    make_lower(x);
+    make_lower(y);
+    return strcmp(x, y) == 0;
+}
+
+// check if string b is inside string a (case insensitive)
+bool contains(const char* a, const char* b)
+{
+    char x[100], y[100];
+    strncpy(x, a, 99); x[99] = '\0';
+    strncpy(y, b, 99); y[99] = '\0';
+    make_lower(x);
+    make_lower(y);
+    return strstr(x, y) != NULL;
+}
+
+// read a full line after cin >>
+void read_line(char* buf, int size)
+{
+    cin.ignore(200, '\n');
+    cin.getline(buf, size);
+}
+
+// read line without ignoring first (when no cin >> before it)
+void read_line2(char* buf, int size)
+{
+    cin.getline(buf, size);
+}
+
+void print_line(char c, int n)
+{
+    for (int i = 0; i < n; i++) cout << c;
+    cout << "\n";
+}
+
+void add_log(const char* msg)
+{
+    if (total_logs >= MAX_LOGS)
+    {
+        // drop oldest
+        for (int i = 0; i < MAX_LOGS - 1; i++)
+            strcpy(log_lines[i], log_lines[i+1]);
+        total_logs = MAX_LOGS - 1;
+    }
+
+    char entry[120];
+    if (logged_in_admin >= 0)
+        sprintf(entry, "[%s] %s", admin_user[logged_in_admin], msg);
+    else
+        sprintf(entry, "[system] %s", msg);
+
+    strncpy(log_lines[total_logs], entry, 119);
+    total_logs++;
+}
+
+
+//  FILE SAVE / LOAD
+
+void save_teams()
+{
+    ofstream f(TEAMS_FILE);
+    if (!f) { cout << "Could not save teams.\n"; return; }
+
+    f << total_teams << "\n";
+    for (int i = 0; i < total_teams; i++)
+    {
+        f << team_name[i]    << "\n"
+          << team_points[i]  << " "
+          << team_played[i]  << " "
+          << team_wins[i]    << " "
+          << team_losses[i]  << " "
+          << team_draws[i]   << " "
+          << team_gf[i]      << " "
+          << team_ga[i]      << "\n";
+    }
+    f.close();
+}
+
+void load_teams()
+{
+    ifstream f(TEAMS_FILE);
+    if (!f) return;
+
+    f >> total_teams;
+    f.ignore();
+    for (int i = 0; i < total_teams; i++)
+    {
+        f.getline(team_name[i], 50);
+        f >> team_points[i] >> team_played[i]
+          >> team_wins[i]   >> team_losses[i]
+          >> team_draws[i]  >> team_gf[i] >> team_ga[i];
+        f.ignore();
+    }
+    f.close();
+}
+
+void save_matches()
+{
+    ofstream f(MATCHES_FILE);
+    if (!f) return;
+
+    f << total_matches << " " << current_day << " " << rr_ready << "\n";
+    for (int i = 0; i < MAX_TEAMS; i++)
+        f << rr_order[i] << " ";
+    f << "\n";
+
+    for (int i = 0; i < total_matches; i++)
+    {
+        f << match_home[i]       << " "
+          << match_away[i]       << " "
+          << match_day[i]        << " "
+          << match_goals_home[i] << " "
+          << match_goals_away[i] << " "
+          << match_done[i]       << "\n";
+    }
+    f.close();
+}
+
+void load_matches()
+{
+    ifstream f(MATCHES_FILE);
+    if (!f) return;
+
+    int rr_int;
+    f >> total_matches >> current_day >> rr_int;
+    rr_ready = (rr_int != 0);
+
+    for (int i = 0; i < MAX_TEAMS; i++)
+        f >> rr_order[i];
+
+    for (int i = 0; i < total_matches; i++)
+    {
+        int done_int;
+        f >> match_home[i] >> match_away[i] >> match_day[i]
+          >> match_goals_home[i] >> match_goals_away[i] >> done_int;
+        match_done[i] = (done_int != 0);
+    }
+    f.close();
+}
+
+void save_admins()
+{
+    ofstream f(ADMINS_FILE);
+    if (!f) return;
+
+    f << total_admins << "\n";
+    for (int i = 0; i < total_admins; i++)
+    {
+        f << admin_user[i]   << "\n"
+          << admin_pass[i]   << "\n"
+          << admin_secret[i] << "\n";
+    }
+    f.close();
+}
+
+void load_admins()
+{
+    ifstream f(ADMINS_FILE);
+    if (!f) return;
+
+    f >> total_admins;
+    f.ignore();
+    for (int i = 0; i < total_admins; i++)
+    {
+        f.getline(admin_user[i],   30);
+        f.getline(admin_pass[i],   30);
+        f.getline(admin_secret[i], 40);
+    }
+    f.close();
+}
+
+void save_logs()
+{
+    ofstream f(LOGS_FILE);
+    if (!f) return;
+
+    f << total_logs << "\n";
+    for (int i = 0; i < total_logs; i++)
+        f << log_lines[i] << "\n";
+    f.close();
+}
+
+void load_logs()
+{
+    ifstream f(LOGS_FILE);
+    if (!f) return;
+
+    f >> total_logs;
+    f.ignore();
+    for (int i = 0; i < total_logs; i++)
+        f.getline(log_lines[i], 120);
+    f.close();
+}
+
+// create key file if missing
+void init_key_file()
+{
+    ifstream check(KEY_FILE);
+    if (check) { check.close(); return; }
+    check.close();
+
+    ofstream f(KEY_FILE);
+    f << "LALIGA2025\n";
+    f.close();
+}
+
+bool verify_secret_key(const char* entered)
+{
+    ifstream f(KEY_FILE);
+    if (!f) return false;
+    char stored[50];
+    f.getline(stored, 50);
+    f.close();
+    return strcmp(stored, entered) == 0;
+}
+
+void save_all()
+{
+    save_teams();
+    save_matches();
+    save_admins();
+    save_logs();
+}
+
+//  TEAM FUNCTIONS (admin only)
+
+// find team index by name, returns -1 if not found
+int find_team(const char* name)
+{
+    for (int i = 0; i < total_teams; i++)
+        if (same_str(team_name[i], name))
+            return i;
+    return -1;
+}
+
+void reset_team_stats(int i)
+{
+    team_points[i]  = 0;
+    team_played[i]  = 0;
+    team_wins[i]    = 0;
+    team_losses[i]  = 0;
+    team_draws[i]   = 0;
+    team_gf[i]      = 0;
+    team_ga[i]      = 0;
+}
 
 void add_team()
 {
-    if (total_teams >= 20)
+    if (total_teams >= MAX_TEAMS)
     {
-        cout << "\nTeam limit reached (20).";
+        cout << "Team limit reached (20).\n";
         return;
     }
 
-    cout << "\nEnter team name to add: ";
-    cin.ignore();
-    getline(cin, team_names[total_teams]);
+    char name[50];
+    cout << "Team name: ";
+    read_line(name, 50);
 
-    points[total_teams]         = 0;
-    matches_played[total_teams] = 0;
-    wins[total_teams]           = 0;
-    losses[total_teams]         = 0;
-    draws[total_teams]          = 0;
-    goals_for[total_teams]      = 0;
-    goals_against[total_teams]  = 0;
+    if (strlen(name) == 0)
+    {
+        cout << "Name can't be empty.\n";
+        return;
+    }
 
+    if (find_team(name) != -1)
+    {
+        cout << "Team already exists.\n";
+        return;
+    }
+
+    int idx = total_teams;
+    strncpy(team_name[idx], name, 49);
+    reset_team_stats(idx);
     total_teams++;
-    cout << "\nTeam added successfully.";
+
+    save_teams();
+
+    char msg[100];
+    sprintf(msg, "Added team: %s", name);
+    add_log(msg);
+
+    cout << "Team added!\n";
 }
 
-void view_teams()
+void print_team_list()
 {
-    if (total_teams == 0)
-    {
-        cout << "\nNo teams added yet.";
-        return;
-    }
-
-    system("cls");
+    if (total_teams == 0) { cout << "No teams yet.\n"; return; }
+    cout << "\n";
     for (int i = 0; i < total_teams; i++)
-        cout << i + 1 << ". " << team_names[i] << endl;
+        cout << i+1 << ". " << team_name[i] << "\n";
+}
+
+// edit team name
+void edit_team()
+{
+    if (total_teams == 0) { cout << "No teams.\n"; return; }
+
+    print_team_list();
+
+    char old_name[50];
+    cout << "Enter team name to edit: ";
+    read_line(old_name, 50);
+
+    int idx = find_team(old_name);
+    if (idx == -1) { cout << "Team not found.\n"; return; }
+
+    char new_name[50];
+    cout << "New name: ";
+    read_line2(new_name, 50);
+
+    if (strlen(new_name) == 0) { cout << "Can't be empty.\n"; return; }
+    if (find_team(new_name) != -1) { cout << "Name taken.\n"; return; }
+
+    char msg[100];
+    sprintf(msg, "Renamed team %s -> %s", team_name[idx], new_name);
+    strncpy(team_name[idx], new_name, 49);
+    save_teams();
+    add_log(msg);
+    cout << "Team renamed.\n";
+}
+
+// delete/relegate a team
+void delete_team()
+{
+    if (total_teams == 0) { cout << "No teams.\n"; return; }
+
+    print_team_list();
+    char name[50];
+    cout << "Enter team name to relegate/remove: ";
+    read_line(name, 50);
+
+    int idx = find_team(name);
+    if (idx == -1) { cout << "Not found.\n"; return; }
+
+    char confirm;
+    cout << "Sure? This resets the season. (y/n): ";
+    cin >> confirm;
+    if (confirm != 'y' && confirm != 'Y') { cout << "Cancelled.\n"; return; }
+
+    // remove matches involving this team
+    int new_total = 0;
+    for (int i = 0; i < total_matches; i++)
+    {
+        if (match_home[i] == idx || match_away[i] == idx) continue;
+
+        if (match_home[i] > idx) match_home[i]--;
+        if (match_away[i] > idx) match_away[i]--;
+
+        match_home[new_total]       = match_home[i];
+        match_away[new_total]       = match_away[i];
+        match_day[new_total]        = match_day[i];
+        match_goals_home[new_total] = match_goals_home[i];
+        match_goals_away[new_total] = match_goals_away[i];
+        match_done[new_total]       = match_done[i];
+        new_total++;
+    }
+    total_matches = new_total;
+
+    // shift teams
+    for (int i = idx; i < total_teams - 1; i++)
+    {
+        strcpy(team_name[i], team_name[i+1]);
+        team_points[i]  = team_points[i+1];
+        team_played[i]  = team_played[i+1];
+        team_wins[i]    = team_wins[i+1];
+        team_losses[i]  = team_losses[i+1];
+        team_draws[i]   = team_draws[i+1];
+        team_gf[i]      = team_gf[i+1];
+        team_ga[i]      = team_ga[i+1];
+    }
+    total_teams--;
+
+    // reset season
+    current_day = 0;
+    rr_ready    = false;
+
+    save_all();
+
+    char msg[100];
+    sprintf(msg, "Relegated team: %s - season reset", name);
+    add_log(msg);
+
+    cout << "Team removed. Season has been reset.\n";
+}
+
+//  MATCH SCHEDULING
+
+bool prev_day_done()
+{
+    for (int i = 0; i < total_matches; i++)
+        if (match_day[i] == current_day && !match_done[i])
+            return false;
+    return true;
 }
 
 void schedule_matchday()
 {
-    if (total_teams < 2)
-    {
-        cout << "\nNeed at least 2 teams to schedule a matchday.\n";
-        return;
-    }
-    if (total_teams % 2 != 0)
-    {
-        cout << "\nNumber of teams must be EVEN to schedule matches.\n";
-        return;
-    }
+    if (total_teams < 2) { cout << "Need at least 2 teams.\n"; return; }
+    if (total_teams % 2 != 0) { cout << "Need even number of teams.\n"; return; }
 
-    int max_matchdays = (total_teams - 1) * 2;
-    if (current_matchday >= max_matchdays)
+    int max_days = (total_teams - 1) * 2;
+    if (current_day >= max_days)
     {
-        cout << "\nAll matchdays have already been scheduled.\n";
+        cout << "All matchdays scheduled already.\n";
         return;
     }
 
-    // Check that the previous matchday is fully played
-    bool all_played = true;
-    for (int i = 0; i < total_matches; i++)
+    // cant schedule next day if current isnt done
+    if (current_day > 0 && !prev_day_done())
     {
-        if (match_day[i] == current_matchday && !match_played[i])
-        {
-            all_played = false;
-            break;
-        }
-    }
-
-    if (current_matchday != 0 && !all_played)
-    {
-        cout << "\nPrevious matchday not completed yet:\n";
-        for (int i = 0; i < total_matches; i++)
-        {
-            if (match_day[i] == current_matchday)
-            {
-                cout << team_names[match_team1[i]] << " vs "
-                     << team_names[match_team2[i]];
-                if (match_played[i])
-                    cout << " | Score: " << goals1[i] << " - " << goals2[i];
-                else
-                    cout << " | Not Played";
-                cout << endl;
-            }
-        }
+        cout << "Finish matchday " << current_day << " first!\n";
         return;
     }
 
-    // Initialise rotation array once per season
-    if (!order_initialized)
+    if (!rr_ready)
     {
         for (int i = 0; i < total_teams; i++)
-            order[i] = i;
-        order_initialized = true;
+            rr_order[i] = i;
+        rr_ready = true;
     }
 
-    current_matchday++;
+    current_day++;
     int half = total_teams / 2;
 
     for (int i = 0; i < half; i++)
     {
-        if (total_matches >= 200)
+        if (total_matches >= MAX_MATCHES) { cout << "Match limit hit!\n"; break; }
+
+        int a = rr_order[i];
+        int b = rr_order[total_teams - 1 - i];
+
+        // swap home/away in return leg
+        if (current_day > (total_teams - 1))
         {
-            cout << "\nMatch schedule is full (200 matches).\n";
-            break;
+            int tmp = a; a = b; b = tmp;
         }
 
-        int teamA = order[i];
-        int teamB = order[total_teams - 1 - i];
-
-        // Swap home/away in the return leg
-        if (current_matchday > (total_teams - 1))
-        {
-            int tmp = teamA;
-            teamA   = teamB;
-            teamB   = tmp;
-        }
-
-        match_team1[total_matches]  = teamA;
-        match_team2[total_matches]  = teamB;
-        match_day[total_matches]    = current_matchday;
-        match_played[total_matches] = false;
+        match_home[total_matches]       = a;
+        match_away[total_matches]       = b;
+        match_day[total_matches]        = current_day;
+        match_goals_home[total_matches] = 0;
+        match_goals_away[total_matches] = 0;
+        match_done[total_matches]       = false;
         total_matches++;
     }
 
-    // Rotate all slots except index 0 (round-robin algorithm)
-    int last = order[total_teams - 1];
+    // rotate (keep index 0 fixed)
+    int last = rr_order[total_teams - 1];
     for (int i = total_teams - 1; i > 1; i--)
-        order[i] = order[i - 1];
-    order[1] = last;
+        rr_order[i] = rr_order[i - 1];
+    rr_order[1] = last;
 
-    cout << "\nMatchday " << current_matchday << " scheduled:\n";
+    save_matches();
+    add_log("Scheduled a matchday");
+
+    cout << "\n-- Matchday " << current_day << " --\n";
     for (int i = 0; i < total_matches; i++)
-        if (match_day[i] == current_matchday)
-            cout << team_names[match_team1[i]] << " vs "
-                 << team_names[match_team2[i]] << endl;
+        if (match_day[i] == current_day)
+            cout << team_name[match_home[i]] << " vs " << team_name[match_away[i]] << "\n";
 }
 
-void simulate_matches()
+// update stats after a result
+void apply_result(int home, int away, int gh, int ga)
 {
-    if (current_matchday == 0)
+    team_played[home]++; team_played[away]++;
+    team_gf[home] += gh; team_ga[home] += ga;
+    team_gf[away] += ga; team_ga[away] += gh;
+
+    if (gh > ga)
     {
-        cout << "\nNo matchday scheduled yet.\n";
-        return;
+        team_points[home] += 3;
+        team_wins[home]++;
+        team_losses[away]++;
     }
-
-    bool any_simulated = false;
-
-    for (int i = 0; i < total_matches; i++)
+    else if (ga > gh)
     {
-        if (match_day[i] != current_matchday || match_played[i])
-            continue;
-
-        any_simulated = true;
-        int team_A = match_team1[i];
-        int team_B = match_team2[i];
-
-        goals1[i]       = rand() % 5;
-        goals2[i]       = rand() % 5;
-        match_played[i] = true;
-
-        matches_played[team_A]++;
-        matches_played[team_B]++;
-
-        goals_for[team_A]     += goals1[i];
-        goals_against[team_A] += goals2[i];
-        goals_for[team_B]     += goals2[i];
-        goals_against[team_B] += goals1[i];
-
-        if (goals1[i] > goals2[i])
-        {
-            points[team_A] += 3;
-            wins[team_A]++;
-            losses[team_B]++;
-        }
-        else if (goals2[i] > goals1[i])
-        {
-            points[team_B] += 3;
-            wins[team_B]++;
-            losses[team_A]++;
-        }
-        else
-        {
-            points[team_A]++;
-            points[team_B]++;
-            draws[team_A]++;
-            draws[team_B]++;
-        }
-
-        string record = team_names[team_A] + " " +
-                        to_string(goals1[i]) + " - " +
-                        to_string(goals2[i]) + " " +
-                        team_names[team_B];
-        push_history(record);
-
-        cout << team_names[team_A] << " "
-             << goals1[i] << " - " << goals2[i] << " "
-             << team_names[team_B] << endl;
-    }
-
-    if (!any_simulated)
-        cout << "\nAll matches in current matchday are already played.\n";
-}
-
-void view_match_history()
-{
-    cout << "\nMatch history (last " << history_count << " results):\n";
-    if (history_count == 0)
-    {
-        cout << "No matches played yet.\n";
-        return;
-    }
-    for (int i = 0; i < history_count; i++)
-        cout << i + 1 << ". " << history[i] << endl;
-}
-
-void relegate_team()
-{
-    if (total_teams == 0)
-    {
-        cout << "\nNo teams to relegate.\n";
-        return;
-    }
-
-    cout << "\nCurrent teams:\n";
-    for (int i = 0; i < total_teams; i++)
-        cout << i + 1 << ". " << team_names[i] << endl;
-
-    cout << "\nEnter the name of the team to relegate: ";
-    cin.ignore();
-    string relegate_name;
-    getline(cin, relegate_name);
-
-    int relegate_idx = -1;
-    for (int i = 0; i < total_teams; i++)
-    {
-        if (team_names[i] == relegate_name)
-        {
-            relegate_idx = i;
-            break;
-        }
-    }
-
-    if (relegate_idx == -1)
-    {
-        cout << "\nTeam \"" << relegate_name << "\" not found.\n";
-        return;
-    }
-
-    // Remove every match involving the relegated team and fix indices
-    int new_total_matches = 0;
-    for (int i = 0; i < total_matches; i++)
-    {
-        if (match_team1[i] == relegate_idx || match_team2[i] == relegate_idx)
-            continue;
-
-        if (match_team1[i] > relegate_idx) match_team1[i]--;
-        if (match_team2[i] > relegate_idx) match_team2[i]--;
-
-        match_team1[new_total_matches]  = match_team1[i];
-        match_team2[new_total_matches]  = match_team2[i];
-        match_day[new_total_matches]    = match_day[i];
-        match_played[new_total_matches] = match_played[i];
-        goals1[new_total_matches]       = goals1[i];
-        goals2[new_total_matches]       = goals2[i];
-        new_total_matches++;
-    }
-    total_matches = new_total_matches;
-
-    // Shift team stat arrays left
-    for (int i = relegate_idx; i < total_teams - 1; i++)
-    {
-        team_names[i]     = team_names[i + 1];
-        points[i]         = points[i + 1];
-        matches_played[i] = matches_played[i + 1];
-        wins[i]           = wins[i + 1];
-        losses[i]         = losses[i + 1];
-        draws[i]          = draws[i + 1];
-        goals_for[i]      = goals_for[i + 1];
-        goals_against[i]  = goals_against[i + 1];
-    }
-    total_teams--;
-
-    // Update rotation order, removing the relegated team's slot
-    int old_size       = total_teams + 1;
-    int new_order_size = 0;
-    for (int i = 0; i < old_size; i++)
-    {
-        if (order[i] == relegate_idx)
-            continue;
-        if (order[i] > relegate_idx)
-            order[i]--;
-        order[new_order_size++] = order[i];
-    }
-
-    // Reset season state for new roster
-    current_matchday  = 0;
-    total_matches     = 0;
-    order_initialized = false;
-    history_count     = 0;
-
-    cout << "\nTeam \"" << relegate_name << "\" has been relegated.\n";
-    cout << "Schedule and history have been reset for the new season.\n";
-}
-
-
-//  USER FUNCTIONS
-void view_league_table()
-{
-    if (total_teams == 0)
-    {
-        cout << "\nNo teams in the league yet.\n";
-        return;
-    }
-
-    int idx[20];
-    for (int i = 0; i < total_teams; i++)
-        idx[i] = i;
-
-    // Bubble sort descending by points, then goal difference
-    for (int i = 0; i < total_teams - 1; i++)
-    {
-        for (int j = 0; j < total_teams - i - 1; j++)
-        {
-            int a    = idx[j];
-            int b    = idx[j + 1];
-            int gd_a = goals_for[a] - goals_against[a];
-            int gd_b = goals_for[b] - goals_against[b];
-
-            if (points[a] < points[b] ||
-               (points[a] == points[b] && gd_a < gd_b))
-            {
-                int tmp    = idx[j];
-                idx[j]     = idx[j + 1];
-                idx[j + 1] = tmp;
-            }
-        }
-    }
-
-    // Find the longest team name so the column width adapts
-    int name_col = 4; // minimum width ("Team" header)
-    for (int i = 0; i < total_teams; i++)
-        if ((int)team_names[i].size() > name_col)
-            name_col = (int)team_names[i].size();
-    name_col += 2; // add a little padding
-
-    // Header
-    cout << "\n"
-         << left  << setw(name_col) << "Team"
-         << right << setw(5)  << "MP"
-                  << setw(5)  << "W"
-                  << setw(5)  << "L"
-                  << setw(5)  << "D"
-                  << setw(5)  << "GF"
-                  << setw(5)  << "GA"
-                  << setw(5)  << "GD"
-                  << setw(6)  << "Pts"
-         << "\n";
-
-    // Separator line sized to match total header width
-    int total_width = name_col + 5*7 + 6; // 7 numeric cols of width 5, Pts of width 6
-    for (int i = 0; i < total_width; i++) cout << '-';
-    cout << "\n";
-
-    // Rows
-    for (int i = 0; i < total_teams; i++)
-    {
-        int t  = idx[i];
-        int gd = goals_for[t] - goals_against[t];
-
-        cout << left  << setw(name_col) << team_names[t]
-             << right << setw(5)  << matches_played[t]
-                      << setw(5)  << wins[t]
-                      << setw(5)  << losses[t]
-                      << setw(5)  << draws[t]
-                      << setw(5)  << goals_for[t]
-                      << setw(5)  << goals_against[t]
-                      << setw(5)  << (gd >= 0 ? "+" : "") + to_string(gd)
-                      << setw(6)  << points[t]
-             << "\n";
-    }
-}
-
-void view_all_matches()
-{
-    if (total_matches == 0)
-    {
-        cout << "\nNo matches scheduled yet.\n";
-        return;
-    }
-
-    cout << "\n===== ALL MATCHES =====\n";
-    for (int d = 1; d <= current_matchday; d++)
-    {
-        cout << "\n--- Matchday " << d << " ---\n";
-        for (int i = 0; i < total_matches; i++)
-        {
-            if (match_day[i] != d) continue;
-
-            cout << team_names[match_team1[i]] << " vs "
-                 << team_names[match_team2[i]];
-            if (match_played[i])
-                cout << " | Score: " << goals1[i] << " - " << goals2[i];
-            else
-                cout << " | Not Played";
-            cout << endl;
-        }
-    }
-}
-
-void view_current_matchday()
-{
-    if (current_matchday == 0)
-    {
-        cout << "\nNo matchday scheduled yet.\n";
-        return;
-    }
-
-    bool has_unplayed = false;
-    for (int i = 0; i < total_matches; i++)
-    {
-        if (match_day[i] == current_matchday && !match_played[i])
-        {
-            has_unplayed = true;
-            break;
-        }
-    }
-
-    if (has_unplayed)
-    {
-        cout << "\n=== Current Matchday " << current_matchday << " ===\n";
-        for (int i = 0; i < total_matches; i++)
-        {
-            if (match_day[i] != current_matchday) continue;
-            cout << team_names[match_team1[i]] << " vs "
-                 << team_names[match_team2[i]];
-            if (match_played[i])
-                cout << " | Score: " << goals1[i] << " - " << goals2[i];
-            else
-                cout << " | Not Played";
-            cout << endl;
-        }
+        team_points[away] += 3;
+        team_wins[away]++;
+        team_losses[home]++;
     }
     else
     {
-        cout << "\n=== Previous Matchday Results (Matchday "
-             << current_matchday << ") ===\n";
-        for (int i = 0; i < total_matches; i++)
+        team_points[home]++;
+        team_points[away]++;
+        team_draws[home]++;
+        team_draws[away]++;
+    }
+}
+
+// reverse stats (used when editing result)
+void undo_result(int home, int away, int gh, int ga)
+{
+    team_played[home]--; team_played[away]--;
+    team_gf[home] -= gh; team_ga[home] -= ga;
+    team_gf[away] -= ga; team_ga[away] -= gh;
+
+    if (gh > ga)
+    {
+        team_points[home] -= 3;
+        team_wins[home]--;
+        team_losses[away]--;
+    }
+    else if (ga > gh)
+    {
+        team_points[away] -= 3;
+        team_wins[away]--;
+        team_losses[home]--;
+    }
+    else
+    {
+        team_points[home]--;
+        team_points[away]--;
+        team_draws[home]--;
+        team_draws[away]--;
+    }
+}
+
+void enter_result()
+{
+    if (current_day == 0) { cout << "No matchday scheduled.\n"; return; }
+
+    // show unplayed matches
+    cout << "\nUnplayed matches - Matchday " << current_day << ":\n";
+    bool any = false;
+    for (int i = 0; i < total_matches; i++)
+    {
+        if (match_day[i] == current_day && !match_done[i])
         {
-            if (match_day[i] == current_matchday)
-                cout << team_names[match_team1[i]] << " "
-                     << goals1[i] << " - " << goals2[i] << " "
-                     << team_names[match_team2[i]] << endl;
+            cout << i+1 << ". " << team_name[match_home[i]]
+                 << " vs " << team_name[match_away[i]] << "\n";
+            any = true;
+        }
+    }
+    if (!any) { cout << "All matches done.\n"; return; }
+
+    int pick;
+    cout << "Enter match number: ";
+    cin  >> pick;
+    pick--;
+
+    if (pick < 0 || pick >= total_matches || match_day[pick] != current_day)
+    {
+        cout << "Invalid.\n"; return;
+    }
+    if (match_done[pick]) { cout << "Already played.\n"; return; }
+
+    int gh, ga;
+    cout << team_name[match_home[pick]] << " goals: "; cin >> gh;
+    cout << team_name[match_away[pick]] << " goals: "; cin >> ga;
+
+    if (gh < 0 || ga < 0) { cout << "Goals can't be negative.\n"; return; }
+
+    match_goals_home[pick] = gh;
+    match_goals_away[pick] = ga;
+    match_done[pick] = true;
+
+    apply_result(match_home[pick], match_away[pick], gh, ga);
+    save_all();
+
+    char msg[120];
+    sprintf(msg, "Result: %s %d-%d %s",
+            team_name[match_home[pick]], gh, ga,
+            team_name[match_away[pick]]);
+    add_log(msg);
+
+    cout << "Result saved.\n";
+}
+
+// let admin fix a wrong score
+void edit_result()
+{
+    if (total_matches == 0) { cout << "No matches.\n"; return; }
+
+    cout << "Enter match number to edit (from view matches): ";
+    int pick; cin >> pick; pick--;
+
+    if (pick < 0 || pick >= total_matches)
+    {
+        cout << "Invalid.\n"; return;
+    }
+    if (!match_done[pick]) { cout << "Not played yet.\n"; return; }
+
+    cout << "Current: " << team_name[match_home[pick]]
+         << " " << match_goals_home[pick]
+         << " - " << match_goals_away[pick]
+         << " " << team_name[match_away[pick]] << "\n";
+
+    int gh, ga;
+    cout << "New score - " << team_name[match_home[pick]] << ": "; cin >> gh;
+    cout << "New score - " << team_name[match_away[pick]] << ": "; cin >> ga;
+
+    if (gh < 0 || ga < 0) { cout << "Invalid scores.\n"; return; }
+
+    // undo old then apply new
+    undo_result(match_home[pick], match_away[pick],
+                match_goals_home[pick], match_goals_away[pick]);
+
+    match_goals_home[pick] = gh;
+    match_goals_away[pick] = ga;
+
+    apply_result(match_home[pick], match_away[pick], gh, ga);
+
+    save_all();
+    add_log("Edited a match result");
+    cout << "Score updated.\n";
+}
+
+void simulate_day()
+{
+    if (current_day == 0) { cout << "Schedule a matchday first.\n"; return; }
+
+    bool any = false;
+    for (int i = 0; i < total_matches; i++)
+    {
+        if (match_day[i] != current_day || match_done[i]) continue;
+
+        any = true;
+        int gh = rand() % 5;
+        int ga = rand() % 5;
+        match_goals_home[i] = gh;
+        match_goals_away[i] = ga;
+        match_done[i] = true;
+
+        apply_result(match_home[i], match_away[i], gh, ga);
+
+        cout << team_name[match_home[i]] << " "
+             << gh << " - " << ga << " "
+             << team_name[match_away[i]] << "\n";
+
+        char msg[120];
+        sprintf(msg, "Simulated: %s %d-%d %s",
+                team_name[match_home[i]], gh, ga,
+                team_name[match_away[i]]);
+        add_log(msg);
+    }
+
+    if (!any) cout << "All matches already played.\n";
+    else save_all();
+}
+
+//  SORTING (for league table)
+
+// returns goal diff
+int goal_diff(int i) { return team_gf[i] - team_ga[i]; }
+
+// bubble sort indices by points then GD (descending)
+void sort_by_points(int* idx, int n)
+{
+    for (int i = 0; i < n - 1; i++)
+    {
+        for (int j = 0; j < n - i - 1; j++)
+        {
+            int a = idx[j], b = idx[j+1];
+            bool swap_needed = false;
+
+            if (team_points[a] < team_points[b]) swap_needed = true;
+            else if (team_points[a] == team_points[b] && goal_diff(a) < goal_diff(b))
+                swap_needed = true;
+
+            if (swap_needed)
+            {
+                int tmp = idx[j];
+                idx[j]  = idx[j+1];
+                idx[j+1] = tmp;
+            }
         }
     }
 }
 
-void search_team_stats()
+// sort by team name alphabetically
+void sort_by_name(int* idx, int n)
 {
-    if (total_teams == 0)
-    {
-        cout << "\nNo teams in the league yet.\n";
-        return;
-    }
+    for (int i = 0; i < n - 1; i++)
+        for (int j = 0; j < n - i - 1; j++)
+            if (strcmp(team_name[idx[j]], team_name[idx[j+1]]) > 0)
+            {
+                int tmp = idx[j]; idx[j] = idx[j+1]; idx[j+1] = tmp;
+            }
+}
 
-    cout << "\nEnter team name to search: ";
-    cin.ignore();
-    string search_name;
-    getline(cin, search_name);
 
-    string search_lower = search_name;
-    to_lower(search_lower);
+//  DISPLAY FUNCTIONS (user + admin)
 
-    int found_idx = -1;
+void show_league_table(int sort_mode)
+{
+    if (total_teams == 0) { cout << "No teams.\n"; return; }
+
+    int idx[MAX_TEAMS];
+    for (int i = 0; i < total_teams; i++) idx[i] = i;
+
+    if (sort_mode == 1) sort_by_points(idx, total_teams);
+    else                sort_by_name(idx, total_teams);
+
+    cout << "\n";
+    print_line('=', 65);
+    cout << "  LALIGA TABLE\n";
+    print_line('=', 65);
+    cout << "Pos  Team               MP   W   L   D   GF  GA  GD  Pts\n";
+    print_line('-', 65);
+
     for (int i = 0; i < total_teams; i++)
     {
-        string name_lower = team_names[i];
-        to_lower(name_lower);
-        if (name_lower == search_lower)
+        int t  = idx[i];
+        int gd = goal_diff(t);
+        char gd_str[10];
+        if (gd >= 0) sprintf(gd_str, "+%d", gd);
+        else         sprintf(gd_str, "%d", gd);
+
+        printf(" %-3d %-18s %-4d %-4d %-4d %-4d %-4d %-4d %-4s %-4d\n",
+               i+1, team_name[t],
+               team_played[t], team_wins[t], team_losses[t], team_draws[t],
+               team_gf[t], team_ga[t], gd_str, team_points[t]);
+    }
+    print_line('=', 65);
+}
+
+void view_sort_menu()
+{
+    int ch;
+    cout << "\n1. Sort by Points\n2. Sort by Name\nChoice: ";
+    cin  >> ch;
+
+    if (ch == 1 || ch == 2) show_league_table(ch);
+    else cout << "Invalid.\n";
+}
+
+void show_all_matches()
+{
+    if (total_matches == 0) { cout << "No matches scheduled.\n"; return; }
+
+    for (int d = 1; d <= current_day; d++)
+    {
+        cout << "\n-- Matchday " << d << " --\n";
+        for (int i = 0; i < total_matches; i++)
         {
-            found_idx = i;
-            break;
+            if (match_day[i] != d) continue;
+            cout << i+1 << ". "
+                 << team_name[match_home[i]] << " vs "
+                 << team_name[match_away[i]];
+            if (match_done[i])
+                cout << "  |  " << match_goals_home[i]
+                     << " - " << match_goals_away[i];
+            else
+                cout << "  |  Not played";
+            cout << "\n";
         }
     }
+}
 
-    if (found_idx == -1)
-    {
-        cout << "\nTeam \"" << search_name << "\" not found.\n";
-        cout << "\nAvailable teams:\n";
-        for (int i = 0; i < total_teams; i++)
-            cout << "  " << i + 1 << ". " << team_names[i] << "\n";
-        return;
-    }
+void show_current_day()
+{
+    if (current_day == 0) { cout << "No matchday scheduled.\n"; return; }
 
-    int t  = found_idx;
-    int gd = goals_for[t] - goals_against[t];
-
-    // Determine league position
-    int position = 1;
-    for (int i = 0; i < total_teams; i++)
-    {
-        if (i == t) continue;
-        int gd_i = goals_for[i] - goals_against[i];
-        if (points[i] > points[t] ||
-           (points[i] == points[t] && gd_i > gd))
-            position++;
-    }
-
-    cout << "\n========================================\n";
-    cout << "  " << team_names[t] << "\n";
-    cout << "========================================\n";
-    cout << "  League Position : " << position << " / " << total_teams << "\n";
-    cout << "  Matches Played  : " << matches_played[t] << "\n";
-    cout << "  Wins            : " << wins[t]           << "\n";
-    cout << "  Draws           : " << draws[t]          << "\n";
-    cout << "  Losses          : " << losses[t]         << "\n";
-    cout << "  Goals For       : " << goals_for[t]      << "\n";
-    cout << "  Goals Against   : " << goals_against[t]  << "\n";
-    cout << "  Goal Difference : " << (gd >= 0 ? "+" : "") << gd << "\n";
-    cout << "  Points          : " << points[t]         << "\n";
-
-    if (matches_played[t] > 0)
-    {
-        int wr = (wins[t] * 100) / matches_played[t];
-        cout << "  Win Rate        : " << wr << "%\n";
-    }
-
-    cout << "\n  --- Match results ---\n";
-    bool any_result = false;
+    cout << "\n-- Matchday " << current_day << " --\n";
     for (int i = 0; i < total_matches; i++)
     {
-        if (!match_played[i]) continue;
-        if (match_team1[i] != t && match_team2[i] != t) continue;
+        if (match_day[i] != current_day) continue;
+        cout << team_name[match_home[i]] << " vs " << team_name[match_away[i]];
+        if (match_done[i])
+            cout << "  |  " << match_goals_home[i] << " - " << match_goals_away[i];
+        else
+            cout << "  |  Upcoming";
+        cout << "\n";
+    }
+}
 
-        any_result = true;
+// show logs
+void show_logs()
+{
+    if (total_logs == 0) { cout << "No logs yet.\n"; return; }
+    cout << "\n-- Activity Log --\n";
+    for (int i = 0; i < total_logs; i++)
+        cout << i+1 << ". " << log_lines[i] << "\n";
+}
 
-        int    g_for, g_against;
-        string opponent;
-        if (match_team1[i] == t)
+
+//  SEARCH FUNCTIONS
+
+void search_team_stats()
+{
+    if (total_teams == 0) { cout << "No teams.\n"; return; }
+
+    char kw[50];
+    cout << "Enter team name: ";
+    read_line(kw, 50);
+
+    int idx = find_team(kw);
+    if (idx == -1)
+    {
+        // try partial
+        cout << "Exact match not found. Searching partial...\n\n";
+        bool any = false;
+        for (int i = 0; i < total_teams; i++)
         {
-            g_for     = goals1[i];
-            g_against = goals2[i];
-            opponent  = team_names[match_team2[i]];
+            if (contains(team_name[i], kw))
+            {
+                idx = i; any = true;
+                cout << "Found: " << team_name[i] << "\n";
+            }
+        }
+        if (!any) { cout << "No team found.\n"; return; }
+        if (idx == -1) return;
+    }
+
+    // calculate position
+    int pos = 1;
+    for (int i = 0; i < total_teams; i++)
+    {
+        if (i == idx) continue;
+        if (team_points[i] > team_points[idx] ||
+           (team_points[i] == team_points[idx] && goal_diff(i) > goal_diff(idx)))
+            pos++;
+    }
+
+    int gd = goal_diff(idx);
+    char gd_str[10];
+    if (gd >= 0) sprintf(gd_str, "+%d", gd);
+    else         sprintf(gd_str, "%d", gd);
+
+    print_line('=', 40);
+    cout << "  " << team_name[idx] << "\n";
+    print_line('-', 40);
+    cout << "  Position     : " << pos << " / " << total_teams << "\n";
+    cout << "  Played       : " << team_played[idx]  << "\n";
+    cout << "  Wins         : " << team_wins[idx]    << "\n";
+    cout << "  Draws        : " << team_draws[idx]   << "\n";
+    cout << "  Losses       : " << team_losses[idx]  << "\n";
+    cout << "  Goals For    : " << team_gf[idx]      << "\n";
+    cout << "  Goals Against: " << team_ga[idx]      << "\n";
+    cout << "  Goal Diff    : " << gd_str            << "\n";
+    cout << "  Points       : " << team_points[idx]  << "\n";
+
+    if (team_played[idx] > 0)
+    {
+        int wr = (team_wins[idx] * 100) / team_played[idx];
+        cout << "  Win Rate     : " << wr << "%\n";
+    }
+
+    print_line('-', 40);
+    cout << "  Match History:\n";
+    bool got_one = false;
+    for (int i = 0; i < total_matches; i++)
+    {
+        if (!match_done[i]) continue;
+        if (match_home[i] != idx && match_away[i] != idx) continue;
+
+        got_one = true;
+        int gf, ga;
+        char opp[50];
+        if (match_home[i] == idx)
+        {
+            gf = match_goals_home[i]; ga = match_goals_away[i];
+            strcpy(opp, team_name[match_away[i]]);
         }
         else
         {
-            g_for     = goals2[i];
-            g_against = goals1[i];
-            opponent  = team_names[match_team1[i]];
+            gf = match_goals_away[i]; ga = match_goals_home[i];
+            strcpy(opp, team_name[match_home[i]]);
         }
 
-        string result;
-        if      (g_for > g_against) result = "W";
-        else if (g_for < g_against) result = "L";
-        else                        result = "D";
-
-        cout << "  MD" << match_day[i] << "  " << result << "  "
-             << team_names[t] << " " << g_for << " - " << g_against
-             << " " << opponent << "\n";
+        char res = (gf > ga) ? 'W' : (gf < ga) ? 'L' : 'D';
+        cout << "  MD" << match_day[i] << "  " << res
+             << "  " << gf << "-" << ga << "  vs " << opp << "\n";
     }
+    if (!got_one) cout << "  No results yet.\n";
+    print_line('=', 40);
 
-    if (!any_result)
-        cout << "  No results yet.\n";
-
-    cout << "========================================\n";
+    add_log("Searched team stats");
 }
 
 void head_to_head()
 {
-    if (total_teams < 2)
-    {
-        cout << "\nNeed at least 2 teams in the league.\n";
-        return;
-    }
+    if (total_teams < 2) { cout << "Need 2 teams.\n"; return; }
 
-    cin.ignore();
+    char n1[50], n2[50];
+    cout << "Team 1: "; read_line(n1, 50);
+    cout << "Team 2: "; read_line2(n2, 50);
 
-    cout << "\nEnter first team name: ";
-    string name1;
-    getline(cin, name1);
+    int i1 = find_team(n1), i2 = find_team(n2);
+    if (i1 == -1) { cout << n1 << " not found.\n"; return; }
+    if (i2 == -1) { cout << n2 << " not found.\n"; return; }
+    if (i1 == i2) { cout << "Same team.\n"; return; }
 
-    cout << "Enter second team name: ";
-    string name2;
-    getline(cin, name2);
+    int w1 = 0, w2 = 0, dr = 0, gf1 = 0, gf2 = 0;
 
-    string low1 = name1, low2 = name2;
-    to_lower(low1);
-    to_lower(low2);
+    print_line('=', 44);
+    cout << "  H2H: " << team_name[i1] << " vs " << team_name[i2] << "\n";
+    print_line('-', 44);
 
-    int idx1 = -1, idx2 = -1;
-    for (int i = 0; i < total_teams; i++)
-    {
-        string nl = team_names[i];
-        to_lower(nl);
-        if (nl == low1) idx1 = i;
-        if (nl == low2) idx2 = i;
-    }
-
-    if      (idx1 == -1) { cout << "\nTeam \"" << name1 << "\" not found.\n"; return; }
-    else if (idx2 == -1) { cout << "\nTeam \"" << name2 << "\" not found.\n"; return; }
-    else if (idx1 == idx2) { cout << "\nPlease enter two different teams.\n"; return; }
-
-    int  h2h_wins1 = 0, h2h_wins2 = 0, h2h_draws = 0;
-    int  h2h_gf1   = 0, h2h_gf2   = 0;
-    bool any_played = false;
-
-    cout << "\n========================================\n";
-    cout << "  " << team_names[idx1] << "  vs  " << team_names[idx2] << "\n";
-    cout << "========================================\n";
-    cout << "  --- All encounters ---\n";
-
+    bool any = false;
     for (int i = 0; i < total_matches; i++)
     {
-        bool is_h2h =
-            (match_team1[i] == idx1 && match_team2[i] == idx2) ||
-            (match_team1[i] == idx2 && match_team2[i] == idx1);
+        bool match = (match_home[i] == i1 && match_away[i] == i2) ||
+                     (match_home[i] == i2 && match_away[i] == i1);
+        if (!match) continue;
 
-        if (!is_h2h) continue;
-
-        if (!match_played[i])
+        if (!match_done[i])
         {
             cout << "  MD" << match_day[i] << "  "
-                 << team_names[match_team1[i]] << " vs "
-                 << team_names[match_team2[i]] << "  (not played yet)\n";
+                 << team_name[match_home[i]] << " vs "
+                 << team_name[match_away[i]] << " (not played)\n";
             continue;
         }
 
-        any_played = true;
-
+        any = true;
         int g1, g2;
-        if (match_team1[i] == idx1) { g1 = goals1[i]; g2 = goals2[i]; }
-        else                        { g1 = goals2[i]; g2 = goals1[i]; }
+        if (match_home[i] == i1) { g1 = match_goals_home[i]; g2 = match_goals_away[i]; }
+        else                     { g1 = match_goals_away[i];  g2 = match_goals_home[i]; }
 
-        h2h_gf1 += g1;
-        h2h_gf2 += g2;
-
-        string result;
-        if      (g1 > g2) { result = team_names[idx1] + " win"; h2h_wins1++; }
-        else if (g2 > g1) { result = team_names[idx2] + " win"; h2h_wins2++; }
-        else              { result = "Draw";                     h2h_draws++;  }
+        gf1 += g1; gf2 += g2;
+        char res[30];
+        if      (g1 > g2) { strcpy(res, team_name[i1]); strcat(res, " win"); w1++; }
+        else if (g2 > g1) { strcpy(res, team_name[i2]); strcat(res, " win"); w2++; }
+        else              { strcpy(res, "Draw"); dr++; }
 
         cout << "  MD" << match_day[i] << "  "
-             << team_names[idx1] << " " << g1 << " - " << g2
-             << " " << team_names[idx2] << "  (" << result << ")\n";
+             << team_name[i1] << " " << g1 << " - " << g2
+             << " " << team_name[i2] << "  (" << res << ")\n";
     }
 
-    if (!any_played)
-    {
-        cout << "  No completed matches between these teams yet.\n";
-    }
+    if (!any) { cout << "  No results yet.\n"; }
     else
     {
-        int total_h2h = h2h_wins1 + h2h_wins2 + h2h_draws;
-        cout << "\n  --- Summary ---\n";
-        cout << "  Matches played  : " << total_h2h << "\n";
-        cout << "  " << team_names[idx1] << " wins    : " << h2h_wins1 << "\n";
-        cout << "  Draws           : " << h2h_draws  << "\n";
-        cout << "  " << team_names[idx2] << " wins    : " << h2h_wins2 << "\n";
-        cout << "  Goals           : "
-             << team_names[idx1] << " " << h2h_gf1
-             << "  -  " << h2h_gf2 << " " << team_names[idx2] << "\n";
-
-        cout << "  Overall leader  : ";
-        if      (h2h_wins1 > h2h_wins2) cout << team_names[idx1] << "\n";
-        else if (h2h_wins2 > h2h_wins1) cout << team_names[idx2] << "\n";
-        else                             cout << "Even\n";
+        print_line('-', 44);
+        cout << "  " << team_name[i1] << " wins : " << w1 << "\n";
+        cout << "  Draws             : " << dr << "\n";
+        cout << "  " << team_name[i2] << " wins : " << w2 << "\n";
+        cout << "  Goals: " << team_name[i1] << " " << gf1
+             << " - " << gf2 << " " << team_name[i2] << "\n";
+        cout << "  Leader: ";
+        if      (w1 > w2) cout << team_name[i1] << "\n";
+        else if (w2 > w1) cout << team_name[i2] << "\n";
+        else              cout << "Even\n";
     }
-    cout << "========================================\n";
+    print_line('=', 44);
+    add_log("Viewed H2H stats");
 }
-//  MENU FUNCTIONS
-bool admin_login()
+
+
+//  ADMIN ACCOUNT MANAGEMENT
+
+int find_admin(const char* uname)
 {
-    int    login_tries = 0;
-    string username, password;
+    for (int i = 0; i < total_admins; i++)
+        if (same_str(admin_user[i], uname))
+            return i;
+    return -1;
+}
 
-    while (login_tries < 3)
+void change_username()
+{
+    char new_name[30];
+    cout << "New username: ";
+    read_line(new_name, 30);
+
+    if (strlen(new_name) < 3) { cout << "Too short.\n"; return; }
+    if (find_admin(new_name) != -1) { cout << "Taken.\n"; return; }
+
+    char msg[80];
+    sprintf(msg, "Username changed: %s -> %s", admin_user[logged_in_admin], new_name);
+    strcpy(admin_user[logged_in_admin], new_name);
+    save_admins();
+    add_log(msg);
+    cout << "Username changed.\n";
+}
+
+void change_password()
+{
+    char old_p[30], new_p[30], confirm[30];
+
+    cout << "Current password: ";
+    read_line(old_p, 30);
+
+    if (strcmp(old_p, admin_pass[logged_in_admin]) != 0)
     {
-        cout << "Enter username: ";
-        cin  >> username;
-        cout << "Enter password: ";
-        cin  >> password;
-
-        if (username == "admin" && password == "1234")
-            return true;
-
-        cout << "\nWrong username or password.\n";
-        login_tries++;
+        cout << "Wrong password.\n"; return;
     }
 
-    cout << "\nLogin failed after 3 attempts.\n";
+    cout << "New password: ";
+    read_line2(new_p, 30);
+    cout << "Confirm: ";
+    read_line2(confirm, 30);
+
+    if (strcmp(new_p, confirm) != 0) { cout << "Don't match.\n"; return; }
+    if (strlen(new_p) < 4) { cout << "Min 4 chars.\n"; return; }
+
+    strcpy(admin_pass[logged_in_admin], new_p);
+    save_admins();
+    add_log("Admin changed password");
+    cout << "Password changed.\n";
+}
+
+void account_settings()
+{
+    int ch;
+    cout << "\n1. Change Username\n2. Change Password\nChoice: ";
+    cin  >> ch;
+    if      (ch == 1) change_username();
+    else if (ch == 2) change_password();
+    else              cout << "Invalid.\n";
+}
+
+
+//  LOGIN / AUTH
+
+// forgot password using secret answer
+void forgot_password()
+{
+    char uname[30];
+    cout << "Your username: ";
+    read_line(uname, 30);
+
+    int idx = find_admin(uname);
+    if (idx == -1) { cout << "Not found.\n"; return; }
+
+    cout << "Secret answer: ";
+    char ans[40];
+    read_line2(ans, 40);
+
+    if (!same_str(ans, admin_secret[idx]))
+    {
+        cout << "Wrong answer.\n"; return;
+    }
+
+    char np[30], confirm[30];
+    cout << "New password: ";
+    read_line2(np, 30);
+    cout << "Confirm: ";
+    read_line2(confirm, 30);
+
+    if (strcmp(np, confirm) != 0) { cout << "Don't match.\n"; return; }
+    if (strlen(np) < 4) { cout << "Too short.\n"; return; }
+
+    strcpy(admin_pass[idx], np);
+    save_admins();
+    add_log("Used forgot password");
+    cout << "Password reset! Login again.\n";
+}
+
+// after 3 failed attempts - use secret key from file
+void admin_key_recovery()
+{
+    cout << "\n-- Emergency Recovery --\n";
+    cout << "Enter secret key from " << KEY_FILE << ": ";
+    char key[50];
+    read_line(key, 50);
+
+    if (!verify_secret_key(key))
+    {
+        cout << "Wrong key. Access denied.\n";
+        return;
+    }
+
+    cout << "Key correct!\n";
+    cout << "Which admin to reset: ";
+    char uname[30];
+    read_line2(uname, 30);
+
+    int idx = find_admin(uname);
+    if (idx == -1) { cout << "Admin not found.\n"; return; }
+
+    char np[30], confirm[30];
+    cout << "New password: ";
+    read_line2(np, 30);
+    cout << "Confirm: ";
+    read_line2(confirm, 30);
+
+    if (strcmp(np, confirm) != 0) { cout << "Don't match.\n"; return; }
+
+    strcpy(admin_pass[idx], np);
+    save_admins();
+    add_log("Used key recovery to reset admin password");
+    cout << "Password reset successfully!\n";
+}
+
+// returns true if login worked
+bool do_admin_login()
+{
+    char uname[30], pass[30];
+    int tries = 0;
+
+    while (tries < 3)
+    {
+        cout << "Username: "; cin >> uname;
+        cout << "Password: "; cin >> pass;
+
+        int idx = find_admin(uname);
+        if (idx != -1 && strcmp(pass, admin_pass[idx]) == 0)
+        {
+            logged_in_admin = idx;
+            return true;
+        }
+
+        tries++;
+        cout << "Wrong! Attempt " << tries << "/3\n";
+    }
+
+    cout << "3 failed attempts.\n";
+
+    char ch;
+    cout << "Use emergency key recovery? (y/n): ";
+    cin  >> ch;
+    if (ch == 'y' || ch == 'Y') admin_key_recovery();
+
     return false;
 }
 
-void admin_menu()
-{
-    int choice = 0;
-    while (choice != 7)
-    {
-        system("cls");
-        cout << "\n1. Add Team\n";
-        cout << "2. View Teams\n";
-        cout << "3. Schedule Matchday\n";
-        cout << "4. Simulate Matches\n";
-        cout << "5. View Match History\n";
-        cout << "6. Relegate Team\n";
-        cout << "7. Back\n";
-        cout << "Enter choice: ";
-        cin  >> choice;
 
-        if      (choice == 1) add_team();
-        else if (choice == 2) view_teams();
-        else if (choice == 3) schedule_matchday();
-        else if (choice == 4) simulate_matches();
-        else if (choice == 5) view_match_history();
-        else if (choice == 6) relegate_team();
-        else if (choice == 7) { /* back */ }
-        else                  cout << "\nEnter a valid option.";
+//  MENUS
 
-        if (choice != 7)
-            pause();
-    }
-}
-
-void user_menu()
-{
-    int choice = 0;
-    while (choice != 6)
-    {
-        system("cls");
-        cout << "1. View League Table\n";
-        cout << "2. View Matches\n";
-        cout << "3. View Current Matchday\n";
-        cout << "4. Search Team Stats\n";
-        cout << "5. Head-to-Head\n";
-        cout << "6. Back\n";
-        cout << "Enter your choice: ";
-        cin  >> choice;
-
-        if      (choice == 1) view_league_table();
-        else if (choice == 2) view_all_matches();
-        else if (choice == 3) view_current_matchday();
-        else if (choice == 4) search_team_stats();
-        else if (choice == 5) head_to_head();
-        else if (choice == 6) { /* back */ }
-        else                  cout << "\nEnter a valid choice.";
-
-        if (choice != 6)
-            pause();
-    }
-}
-
-void print_banner()
+void banner()
 {
     cout << R"(
   _               _      _____ _____
@@ -827,55 +1202,155 @@ void print_banner()
  | |      / /\ \ | |      | || | |_ | / /\ \
  | |____ / ____ \| |____ _| || |__| |/ ____ \
  |______/_/    \_\______|_____\_____/_/    \_\
-    )";
-    cout << "\nWelcome to LALIGA MANAGEMENT SYSTEM.\n";
+)";
+    cout << "  Welcome to LaLiga Management System\n\n";
 }
 
-// ============================================================
+void admin_menu()
+{
+    int ch = 0;
+    while (ch != 11)
+    {
+        cls();
+        cout << "==== ADMIN PANEL [" << admin_user[logged_in_admin] << "] ====\n";
+        cout << " 1. Add Team\n";
+        cout << " 2. Edit Team Name\n";
+        cout << " 3. Remove/Relegate Team\n";
+        cout << " 4. Schedule Matchday\n";
+        cout << " 5. Enter Match Result\n";
+        cout << " 6. Edit Match Result\n";
+        cout << " 7. Simulate Matchday\n";
+        cout << " 8. View Activity Logs\n";
+        cout << " 9. Account Settings\n";
+        cout << "10. View League Table\n";
+        cout << "11. Logout\n";
+        cout << "Choice: ";
+        cin  >> ch;
+
+        if      (ch == 1)  add_team();
+        else if (ch == 2)  edit_team();
+        else if (ch == 3)  delete_team();
+        else if (ch == 4)  schedule_matchday();
+        else if (ch == 5)  enter_result();
+        else if (ch == 6)  edit_result();
+        else if (ch == 7)  simulate_day();
+        else if (ch == 8)  show_logs();
+        else if (ch == 9)  account_settings();
+        else if (ch == 10) show_league_table(1);
+        else if (ch == 11) { logged_in_admin = -1; add_log("Logged out"); }
+        else               cout << "Invalid.\n";
+
+        if (ch != 11) pause_key();
+    }
+}
+
+void user_menu()
+{
+    int ch = 0;
+    while (ch != 7)
+    {
+        cls();
+        cout << "==== LaLiga - Fan View ====\n";
+        cout << "1. League Table\n";
+        cout << "2. All Matches\n";
+        cout << "3. Current Matchday\n";
+        cout << "4. Search Team Stats\n";
+        cout << "5. Head-to-Head\n";
+        cout << "6. Sort Options\n";
+        cout << "7. Back\n";
+        cout << "Choice: ";
+        cin  >> ch;
+
+        if      (ch == 1) show_league_table(1);
+        else if (ch == 2) show_all_matches();
+        else if (ch == 3) show_current_day();
+        else if (ch == 4) search_team_stats();
+        else if (ch == 5) head_to_head();
+        else if (ch == 6) view_sort_menu();
+        else if (ch == 7) { /* back */ }
+        else              cout << "Invalid.\n";
+
+        if (ch != 7) pause_key();
+    }
+}
+
+
 //  MAIN
-// ============================================================
 
 int main()
 {
-    // Initialise default teams
-    team_names[0] = "Barca";
-    team_names[1] = "Madrid";
-    team_names[2] = "Atleti";
-    team_names[3] = "bilbao";
-    team_names[4] = "Girona";
+    srand(42);
 
-    int login_choice = 0;
-    while (login_choice != 3)
+    // load saved data
+    load_admins();
+    load_teams();
+    load_matches();
+    load_logs();
+    init_key_file();
+
+    // first run - make default admin
+    if (total_admins == 0)
     {
-        system("cls");
-        print_banner();
+        strcpy(admin_user[0],   "admin");
+        strcpy(admin_pass[0],   "1234");
+        strcpy(admin_secret[0], "laliga");
+        total_admins = 1;
+        save_admins();
+    }
 
-        cout << "1. Admin Login\n";
-        cout << "2. User Menu\n";
-        cout << "3. Exit\n";
-        cout << "Enter choice: ";
-        cin  >> login_choice;
-
-        if (login_choice == 1)
+    // default teams if none
+    if (total_teams == 0)
+    {
+        const char* defaults[] = {"Barca", "Madrid", "Atletico madrid", "Bilbao", "Girona", "Betis"};
+        for (int i = 0; i < 6; i++)
         {
-            if (admin_login())
-                admin_menu();
+            strcpy(team_name[i], defaults[i]);
+            reset_team_stats(i);
         }
-        else if (login_choice == 2)
+        total_teams = 6;
+        save_teams();
+    }
+
+    int choice = 0;
+    while (choice != 4)
+    {
+        cls();
+        banner();
+        cout << "1. Admin Login\n";
+        cout << "2. View as Fan\n";
+        cout << "3. Forgot Password\n";
+        cout << "4. Exit\n";
+        cout << "Choice: ";
+        cin  >> choice;
+
+        if (choice == 1)
+        {
+            cls(); banner();
+            if (do_admin_login())
+            {
+                add_log("Admin logged in");
+                admin_menu();
+            }
+        }
+        else if (choice == 2)
         {
             user_menu();
         }
-        else if (login_choice == 3)
+        else if (choice == 3)
         {
-            // exit — loop condition handles it 
+            cls();
+            forgot_password();
+            pause_key();
+        }
+        else if (choice == 4)
+        {
+            cout << "Bye!\n";
         }
         else
         {
-            cout << "\nEnter a valid choice.";
+            cout << "Invalid.\n";
+            pause_key();
         }
-
-        if (login_choice != 3)
-            pause();
     }
 
     return 0;
